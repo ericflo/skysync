@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/NebulousLabs/go-skynet"
 	"github.com/fishman/fsnotify"
 	"github.com/sirupsen/logrus"
 )
@@ -200,7 +199,7 @@ func (ss *SkySync) uploadNonExisting() error {
 			delete(ss.filesToUpload, file)
 			continue
 		}
-		skylink, err := skynet.UploadFile(file, skynet.DefaultUploadOptions)
+		skylink, err := UploadFile(file, DefaultUploadOptions)
 		if err != nil {
 			log.WithFields(logrus.Fields{
 				"error": err.Error(),
