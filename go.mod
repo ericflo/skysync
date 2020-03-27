@@ -7,4 +7,5 @@ require (
 	github.com/fishman/fsnotify v1.4.8
 	github.com/sirupsen/logrus v1.4.2
 	gitlab.com/NebulousLabs/Sia v1.4.1
+	golang.org/x/sync v0.0.0-20200317015054-43a5402ce75a
 )

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/fishman/fsnotify"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/semaphore"
 )
 
 type (
@@ -25,6 +28,7 @@ type (
 		opts          syncOpts
 		root          string
 		skyfiles      map[string]string
+		skyfilesMut   sync.Mutex
 		watcher       *fsnotify.Watcher
 
 		closeChan chan struct{}
@@ -139,6 +143,8 @@ func (ss *SkySync) UploadDir() error {
 		log.WithFields(logrus.Fields{
 			"file": walkpath,
 		}).Debug("Checking if file has been uploaded")
+		ss.skyfilesMut.Lock()
+		defer ss.skyfilesMut.Unlock()
 		if _, ok := ss.skyfiles[walkpath]; ok {
 			return nil
 		}
@@ -173,9 +179,22 @@ func (ss *SkySync) Close() error {
 	return nil
 }
 
+var sem *semaphore.Weighted = semaphore.NewWeighted(int64(20))
+
 // uploadNonExisting uploads any pending files to SkyNet.
 func (ss *SkySync) uploadNonExisting() error {
-	for file := range ss.filesToUpload {
+	ctx := context.TODO()
+
+	// Lock and make a copy
+	ss.skyfilesMut.Lock()
+	filesToUploadCopy := make(map[string]struct{}, len(ss.filesToUpload))
+	for key, value := range ss.filesToUpload {
+		filesToUploadCopy[key] = value
+	}
+	ss.skyfilesMut.Unlock()
+
+	// Iterate over the copy and delete entries in the real one
+	for file := range filesToUploadCopy {
 		// Check if the file is good for upload
 		goodForUpload, err := ss.checkFile(filepath.Clean(file))
 		if err != nil {
@@ -195,21 +214,30 @@ func (ss *SkySync) uploadNonExisting() error {
 			"file": file,
 		}).Info("uploading file to skynet")
 		if dryRun {
+			ss.skyfilesMut.Lock()
+			defer ss.skyfilesMut.Unlock()
 			ss.skyfiles[file] = ""
 			delete(ss.filesToUpload, file)
 			continue
 		}
-		skylink, err := UploadFile(file, DefaultUploadOptions)
-		if err != nil {
-			log.WithFields(logrus.Fields{
-				"error": err.Error(),
-			}).Debug("File skynet upload failed")
-			continue
-		}
 
-		// Add file to map and remove from slice of files to upload
-		ss.skyfiles[file] = skylink
-		delete(ss.filesToUpload, file)
+		if err := sem.Acquire(ctx, 1); err != nil {
+			log.Printf("Failed to acquire semaphore: %v", err)
+			break
+		}
+		go func(f string) {
+			defer sem.Release(1)
+			skylink, err := UploadFile(f, DefaultUploadOptions)
+			if err != nil {
+				log.WithFields(logrus.Fields{"error": err.Error()}).Debug("File skynet upload failed")
+				return
+			}
+			// Add file to map and remove from slice of files to upload
+			ss.skyfilesMut.Lock()
+			ss.skyfiles[f] = skylink
+			delete(ss.filesToUpload, f)
+			ss.skyfilesMut.Unlock()
+		}(file)
 	}
 	// Persist to disk
 	return ss.save()
